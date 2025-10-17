@@ -1,0 +1,12 @@
+ADEChallengeData2016/
+checkpoints/
+imagenet-100/
+jepa_finetuning_output_full/
+jepa_rl_training_output/
+jepa_training_output_full/
+notebooks/
+supervised_training_output/
+*.pt
+*.pth
+*.ckpt
+*.onnx
