@@ -10,3 +10,11 @@ supervised_training_output/
 *.pth
 *.ckpt
 *.onnx
+/__pycache__/
+/ADEChallengeData2016/
+/imagenet-100/
+/jepa_finetuning_output_QUICK_TEST/
+/jepa_finetuning_output_QUICK_TEST_RL/
+/jepa_rl_training_output/
+/jepa_rl_training_output_QUICK_TEST/
+/jepa_training_output_QUICK_TEST/

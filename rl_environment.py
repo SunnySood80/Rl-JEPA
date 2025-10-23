@@ -74,7 +74,7 @@ class MaskingEnv(gym.Env):
 
         if done and self.masked_count >= self.num_masked:
             steps_saved = self.max_steps - self.step_count
-            efficiency_bonus = (steps_saved / self.max_steps) * 10.0
+            efficiency_bonus = (steps_saved / self.max_steps) * 20.0
             reward = efficiency_bonus
         else:
             reward = 0.0
@@ -92,3 +92,22 @@ class MaskingEnv(gym.Env):
             if action not in self.masked_patches:
                 available.append(action)
         return available
+
+    def actions_to_mask(self, actions):
+        """
+        Convert action array to mask grid
+        
+        Args:
+            actions: numpy array [num_patches] with 0s and 1s
+        
+        Returns:
+            mask: [grid_h, grid_w] boolean mask
+        """
+        
+        # Reshape flat actions to 2D grid
+        mask = actions.reshape(self.n_patches_h, self.n_patches_w)
+        
+        # Convert to boolean if needed
+        mask = mask.astype(bool)
+        
+        return mask

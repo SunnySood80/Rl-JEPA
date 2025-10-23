@@ -90,7 +90,7 @@ local_rank = int(os.environ.get("LOCAL_RANK", 0))
 is_main_process = rank == 0
 
 atexit.register(cleanup_ddp)
-
+1
 jepa_dataset = JEPADataset()
 
 if QUICK_TEST:
@@ -103,7 +103,7 @@ if world_size > 1:
         jepa_dataset,
         batch_size=batch_size_pretrain,
         sampler=train_sampler,
-        num_workers=12,
+        num_workers=6,
         pin_memory=True,
         collate_fn=jepa_collate
     )
@@ -263,7 +263,7 @@ for epoch in range(num_epochs):
         with autocast(device_type='cuda', enabled=True, dtype=torch.bfloat16 if use_bf16 else torch.float16):
             
             if USE_RL_MASKING and rl_trainer:
-                import time
+
                 rl_start = time.time()
                 
                 actual_batch_size = images.shape[0]
@@ -285,9 +285,6 @@ for epoch in range(num_epochs):
                 if batch_idx % 10 == 0 and is_main_process:
                     avg_episode_length = np.mean([len(ep['actions']) for ep in all_episodes])
                     print(f"RL mask gen time: {rl_time:.2f}s, avg episode length: {avg_episode_length:.1f}")
-                
-                if world_size > 1:
-                    dist.barrier()
                 
                 outputs = model(images, external_fi1_mask=batched_masks)
                 episodes = all_episodes
@@ -347,16 +344,20 @@ for epoch in range(num_epochs):
             
             real_rewards = calculate_jepa_rewards(episodes, jepa_outputs_for_rl)
             
-            import time
+        # UPDATE_FREQUENCY = 20
+        # if batch_idx % UPDATE_FREQUENCY == 0 and is_main_process:
+        #     print(f"Updating RL agent at batch {batch_idx}/{len(pretrain_loader)}")
+        #     update_start = time.time()
+        #     rl_trainer.update_agent(episodes, jepa_outputs_for_rl)
+        #     update_time = time.time() - update_start
+        #     print(f"RL update time: {update_time:.2f}s")
+
+        if is_main_process:
+            print(f"Updating RL agent at batch {batch_idx}/{len(pretrain_loader)}")
             update_start = time.time()
             rl_trainer.update_agent(episodes, jepa_outputs_for_rl)
             update_time = time.time() - update_start
-            
-            if batch_idx % 10 == 0 and is_main_process:
-                print(f"RL update time: {update_time:.2f}s")
-            
-            if world_size > 1:
-                dist.barrier()
+            print(f"RL update time: {update_time:.2f}s")
         
         scaler.scale(total_loss).backward()
         

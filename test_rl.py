@@ -13,9 +13,9 @@ print(f"Created trainer with fi1_shape: {fi1_shape}")
 print("Testing episode collection...")
 masks, episodes = trainer.generate_masks_for_batch(batch_size=2)
 
-print(f"✅ Generated {len(masks)} masks")
-print(f"✅ Mask shape: {masks[0].shape}")
-print(f"✅ Episode count: {len(episodes)}")
-print(f"✅ Actions per episode: {len(episodes[0]['actions'])}")
+print(f"Generated {len(masks)} masks")
+print(f"Mask shape: {masks[0].shape}")
+print(f"Episode count: {len(episodes)}")
+print(f"Actions per episode: {len(episodes[0]['actions'])}")
 
 print("RL components working correctly!")

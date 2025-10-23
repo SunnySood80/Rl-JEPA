@@ -2,6 +2,7 @@ import torch
 import numpy as np
 from PPO import PPO, ExperienceBuffer
 from rl_environment import MaskingEnv
+from torch.distributions import Categorical
 
 
 def create_custom_ppo_agent(fi1_shape, mask_ratio=0.5, patch_size=8, device='cuda'):
@@ -18,43 +19,89 @@ def create_custom_ppo_agent(fi1_shape, mask_ratio=0.5, patch_size=8, device='cud
     return agent, env
 
 
+# def collect_episodes_batch(agent, env, fi1_shape, batch_size=32):
+#     episodes = []
+
+#     for i in range(batch_size):
+#         obs = env.reset()
+#         done = False
+#         actions = []
+#         states = []
+#         log_probs = []
+#         values = []
+#         rewards = []
+#         dones = []
+
+#         while not done:
+#             action, log_prob, value = agent.select_action(obs, deterministic=False)
+#             states.append(obs.copy())
+#             actions.append(action)
+#             log_probs.append(log_prob)
+#             values.append(value)
+            
+#             obs, reward, done, info = env.step(action)
+#             rewards.append(reward)
+#             dones.append(done)
+
+#         final_mask = env.get_final_mask()
+
+#         episodes.append({
+#             'mask': final_mask,
+#             'actions': actions,
+#             'states': states,
+#             'log_probs': log_probs,
+#             'values': values,
+#             'rewards': rewards,
+#             'dones': dones
+#         })
+
+#     return episodes
+
+
 def collect_episodes_batch(agent, env, fi1_shape, batch_size=32):
     episodes = []
-
+    
+    # Get initial states for all images at once
+    states_batch = []
     for i in range(batch_size):
         obs = env.reset()
-        done = False
-        actions = []
-        states = []
-        log_probs = []
-        values = []
-        rewards = []
-        dones = []
-
-        while not done:
-            action, log_prob, value = agent.select_action(obs, deterministic=False)
-            states.append(obs.copy())
-            actions.append(action)
-            log_probs.append(log_prob)
-            values.append(value)
-            
-            obs, reward, done, info = env.step(action)
-            rewards.append(reward)
-            dones.append(done)
-
-        final_mask = env.get_final_mask()
-
+        states_batch.append(obs)
+    
+    states_batch = np.array(states_batch)  # [batch_size, H, W] or whatever shape
+    
+    # SINGLE FORWARD PASS - get ALL decisions at once
+    states_tensor = torch.FloatTensor(states_batch).to(agent.device)
+    
+    with torch.no_grad():
+        action_probs, values = agent.policy(states_tensor)  # [batch, num_patches, 2]
+    
+    # Sample actions for each image
+    for i in range(batch_size):
+        # Sample ALL patch decisions for this image at once
+        dist = Categorical(action_probs[i])
+        
+        # This samples decisions for ALL patches in one call
+        # If you have 512 patches, this gives you 512 decisions at once
+        actions = dist.sample()  # [num_patches]
+        log_probs = dist.log_prob(actions)  # [num_patches]
+        value = values[i].item()
+        
+        # Convert actions to final mask
+        final_mask = env.actions_to_mask(actions.cpu().numpy())
+        
+        # Create "episode" (but it's just 1 step now)
         episodes.append({
             'mask': final_mask,
-            'actions': actions,
-            'states': states,
-            'log_probs': log_probs,
-            'values': values,
-            'rewards': rewards,
-            'dones': dones
+            'actions': [actions.cpu().numpy()],  # List with 1 element
+            'states': [states_batch[i]],         # List with 1 element
+            'log_probs': [log_probs.cpu().numpy()],  # List with 1 element
+            'values': [value],                   # List with 1 element
+            'rewards': [],  # Fill in later after JEPA runs
+            'dones': [True]  # Always done after 1 step
         })
-
+    
     return episodes
+
 
 
 def calculate_jepa_rewards(episodes, jepa_outputs):

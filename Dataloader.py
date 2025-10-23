@@ -6,8 +6,8 @@ from Dataset import JEPADataset, ADE20KDataset, jepa_collate, ade_collate
 # =============================================================================
 
 # Training configuration
-batch_size_pretrain =  30 # was 32 for no RL
-batch_size_downstream = 20 # 24 for the supervised
+batch_size_pretrain =  100 # was 32 for no RL, 100 for H200
+batch_size_downstream = 20 # 24 for the supervised, 20 for H200
 
 # Create dataset instances
 jepa_dataset = JEPADataset()
