@@ -93,21 +93,21 @@ class MaskingEnv(gym.Env):
                 available.append(action)
         return available
 
-    def actions_to_mask(self, actions):
-        """
-        Convert action array to mask grid
+    # def actions_to_mask(self, actions):
+    #     """
+    #     Convert action array to mask grid
         
-        Args:
-            actions: numpy array [num_patches] with 0s and 1s
+    #     Args:
+    #         actions: numpy array [num_patches] with 0s and 1s
         
-        Returns:
-            mask: [grid_h, grid_w] boolean mask
-        """
+    #     Returns:
+    #         mask: [grid_h, grid_w] boolean mask
+    #     """
         
-        # Reshape flat actions to 2D grid
-        mask = actions.reshape(self.n_patches_h, self.n_patches_w)
+    #     # Reshape flat actions to 2D grid
+    #     mask = actions.reshape(self.n_patches_h, self.n_patches_w)
         
-        # Convert to boolean if needed
-        mask = mask.astype(bool)
+    #     # Convert to boolean if needed
+    #     mask = mask.astype(bool)
         
-        return mask
+    #     return mask

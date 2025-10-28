@@ -1,4 +1,3 @@
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -158,14 +157,14 @@ class A2C:
 
     def save(self, path: str):
         torch.save({
-                'policy_state_dict': self.policy.state_dict(),
-                'optimizer_state_dict': self.optimizer.state_dict(),
-            }, path)
-        
-        def load(self, path: str):
-            checkpoint = torch.load(path)
-            self.policy.load_state_dict(checkpoint['policy_state_dict'])
-            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            'policy_state_dict': self.policy.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+        }, path)
+    
+    def load(self, path: str):
+        checkpoint = torch.load(path)
+        self.policy.load_state_dict(checkpoint['policy_state_dict'])
+        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
 
 
 class ExperienceBuffer:
