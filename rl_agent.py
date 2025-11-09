@@ -221,7 +221,7 @@ class MaskingAgentTrainer:
 
     def __init__(self, fi1_shape, mask_ratio=0.5, patch_size=8, device='cuda'):
         
-        self.agent, self.env = create_custom_ppo_agent(fi1_shape, mask_ratio, patch_size, device)
+        self.agent, self.env = create_custom_a2c_agent(fi1_shape, mask_ratio, patch_size, device)
         self.fi1_shape = fi1_shape
 
     def generate_masks_for_batch(self, batch_size=32):

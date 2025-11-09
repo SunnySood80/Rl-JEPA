@@ -52,7 +52,7 @@ use_bf16 = torch.cuda.is_bf16_supported()
 
 
 USE_RL_MASKING = True
-QUICK_TEST = False
+QUICK_TEST = True
 
 
 # DDP Setup
@@ -103,18 +103,20 @@ if world_size > 1:
         jepa_dataset,
         batch_size=batch_size_pretrain,
         sampler=train_sampler,
-        num_workers=6,
+        num_workers=1,  # Reduced from 6 to avoid worker overload
         pin_memory=True,
-        collate_fn=jepa_collate
+        collate_fn=jepa_collate,
+        persistent_workers=True  # Keep workers alive between epochs
     )
 else:
     pretrain_loader = DataLoader(
         jepa_dataset,
         batch_size=batch_size_pretrain,
         shuffle=True,
-        num_workers=4,
+        num_workers=2,  # Reduced from 4
         pin_memory=True,
-        collate_fn=jepa_collate
+        collate_fn=jepa_collate,
+        persistent_workers=True
     )
 
 if is_main_process:
@@ -344,15 +346,9 @@ for epoch in range(num_epochs):
             
             real_rewards = calculate_jepa_rewards(episodes, jepa_outputs_for_rl)
             
-        # UPDATE_FREQUENCY = 20
-        # if batch_idx % UPDATE_FREQUENCY == 0 and is_main_process:
-        #     print(f"Updating RL agent at batch {batch_idx}/{len(pretrain_loader)}")
-        #     update_start = time.time()
-        #     rl_trainer.update_agent(episodes, jepa_outputs_for_rl)
-        #     update_time = time.time() - update_start
-        #     print(f"RL update time: {update_time:.2f}s")
-
-        if is_main_process:
+        # Update RL agent every N batches instead of every single batch
+        UPDATE_FREQUENCY = 15
+        if batch_idx % UPDATE_FREQUENCY == 0 and is_main_process:
             print(f"Updating RL agent at batch {batch_idx}/{len(pretrain_loader)}")
             update_start = time.time()
             rl_trainer.update_agent(episodes, jepa_outputs_for_rl)
@@ -485,3 +481,4 @@ if is_main_process:
     print(f"Training completed. Best model already saved: {best_ckpt_path}")
 
 cleanup_ddp()
+

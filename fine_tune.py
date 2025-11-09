@@ -15,7 +15,7 @@ Usage:
 
 # CRITICAL: Set NCCL environment variables BEFORE importing torch
 import os
-os.environ['NCCL_TIMEOUT'] = '7200'              # 2 hours
+os.environ['NCCL_TIMEOUT'] = '14400'             # 4 hours (was timing out at 10 min)
 os.environ['NCCL_BLOCKING_WAIT'] = '1'           # Synchronous error handling
 os.environ['NCCL_ASYNC_ERROR_HANDLING'] = '1'    # Better error reporting
 os.environ['NCCL_IB_DISABLE'] = '1'              # Disable InfiniBand
@@ -51,8 +51,9 @@ def setup_ddp():
         world_size = int(os.environ['WORLD_SIZE'])
         local_rank = int(os.environ['LOCAL_RANK'])
         
-        # Initialize process group
-        dist.init_process_group(backend='nccl')
+        # Initialize process group with explicit timeout
+        from datetime import timedelta
+        dist.init_process_group(backend='nccl', timeout=timedelta(seconds=14400))
         
         # Set device for this rank
         torch.cuda.set_device(local_rank)
@@ -110,34 +111,38 @@ if world_size > 1:
         ade_train_dataset,
         batch_size=batch_size_downstream,
         sampler=train_sampler,
-        num_workers=8,
+        num_workers=1,  # Reduced from 8 to avoid worker overload
         pin_memory=True,
-        collate_fn=ade_collate
+        collate_fn=ade_collate,
+        persistent_workers=False  # Disabled - causes hangs in multi-GPU training
     )
     downstream_val_loader = DataLoader(
         ade_val_dataset,
         batch_size=batch_size_downstream,
         sampler=val_sampler,
-        num_workers=8,
+        num_workers=1,  # Reduced from 8 to avoid worker overload
         pin_memory=True,
-        collate_fn=ade_collate
+        collate_fn=ade_collate,
+        persistent_workers=False  # Disabled - causes hangs in multi-GPU training
     )
 else:
     downstream_train_loader = DataLoader(
         ade_train_dataset,
         batch_size=batch_size_downstream,
         shuffle=True,
-        num_workers=4,
+        num_workers=2,  # Reduced from 4
         pin_memory=True,
-        collate_fn=ade_collate
+        collate_fn=ade_collate,
+        persistent_workers=False  # Disabled - causes hangs
     )
     downstream_val_loader = DataLoader(
         ade_val_dataset,
         batch_size=batch_size_downstream,
         shuffle=False,
-        num_workers=4,
+        num_workers=2,  # Reduced from 4
         pin_memory=True,
-        collate_fn=ade_collate
+        collate_fn=ade_collate,
+        persistent_workers=False  # Disabled - causes hangs
     )
 
 if is_main_process:
@@ -256,7 +261,7 @@ jepa_model = MaskJEPA2D(
     num_queries=50, num_cross_attn=5, num_self_attn=1, patch_size=8
 ).to(device)
 
-weights_path = "/u/ssood/projects/Rl-JEPA/jepa_training_output_QUICK_TEST/mask_jepa_pretrained_weights.pt"
+weights_path = "/u/ssood/projects/Rl-JEPA/jepa_rl_training_output_QUICK_TEST_A2C_128/mask_jepa_rl_pretrained_weights.pt"
 if not os.path.exists(weights_path):
     if is_main_process:
         print(f"ERROR: Pretrained JEPA weights not found at {weights_path}")
@@ -332,7 +337,7 @@ scheduler = LambdaLR(
 criterion = nn.CrossEntropyLoss(ignore_index=IGNORE_INDEX)
 scaler = GradScaler('cuda')
 
-save_dir = "./jepa_finetuning_output_QUICK_TEST"
+save_dir = "./jepa_finetuning_output_QUICK_TEST_A2C_128"
 # Ensure directory exists on all ranks
 os.makedirs(save_dir, exist_ok=True)
 if is_main_process:
@@ -472,6 +477,10 @@ for epoch in range(num_epochs):
                 print(f"  [Early Stop] Patience exceeded. Stopping fine-tuning.")
             break
 
+    # Synchronize before visualization
+    if world_size > 1:
+        dist.barrier()
+    
     # Visualizations every 20 epochs (rank 0 only)
     if (epoch + 1) % 20 == 0 and is_main_process:
         with torch.no_grad():
@@ -484,6 +493,10 @@ for epoch in range(num_epochs):
             visualize_segmentation(vis_images, vis_masks, vis_logits, epoch+1, vis_path)
             print(f"  Saved visualization: {vis_path}")
             del vis_batch, vis_images, vis_masks, vis_logits
+    
+    # Synchronize all ranks after visualization
+    if world_size > 1:
+        dist.barrier()
 
     torch.cuda.empty_cache(); gc.collect()
 

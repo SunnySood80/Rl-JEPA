@@ -6,8 +6,12 @@ from Dataset import JEPADataset, ADE20KDataset, jepa_collate, ade_collate
 # =============================================================================
 
 # Training configuration
-batch_size_pretrain =  100 # was 32 for no RL, 100 for H200
-batch_size_downstream = 20 # 24 for the supervised, 20 for H200
+# A100 (49GB VRAM) optimized settings:
+# - batch_size_pretrain: 32-40 recommended (was 24, H200 used 100)
+# - With RL: 32 is safe, 40 may work with monitoring
+# - Without RL: can go up to 48
+batch_size_pretrain = 24  # Optimized for A100 49GB with RL masking
+batch_size_downstream = 16 # 24 for the supervised, 20 for H200
 
 # Create dataset instances
 jepa_dataset = JEPADataset()
@@ -24,9 +28,10 @@ pretrain_loader = DataLoader(
     jepa_dataset,
     batch_size=batch_size_pretrain,
     shuffle=True,
-    num_workers=4,
+    num_workers=2,  # Reduced from 4 to avoid worker overload
     pin_memory=True,
-    collate_fn=jepa_collate
+    collate_fn=jepa_collate,
+    persistent_workers=True
 )
 
 # Downstream fine-tuning loaders
@@ -34,18 +39,20 @@ downstream_train_loader = DataLoader(
     ade_train_dataset,
     batch_size=batch_size_downstream,
     shuffle=True,
-    num_workers=8,
+    num_workers=2,  # Reduced from 8 to avoid worker overload
     pin_memory=True,
-    collate_fn=ade_collate
+    collate_fn=ade_collate,
+    persistent_workers=True
 )
 
 downstream_val_loader = DataLoader(
     ade_val_dataset,
     batch_size=batch_size_downstream,
     shuffle=False,
-    num_workers=8,
+    num_workers=2,  # Reduced from 8 to avoid worker overload
     pin_memory=True,
-    collate_fn=ade_collate
+    collate_fn=ade_collate,
+    persistent_workers=True
 )
 
 print(f"\nDataLoader info:")
