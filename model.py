@@ -293,6 +293,7 @@ class Predictor2D(nn.Module):
 
         # learnable queries
         self.query_embed = nn.Parameter(torch.zeros(1, num_queries, embed_dim))
+        # Seed initialization for reproducibility (uses global seed set by utils.set_seed())
         nn.init.trunc_normal_(self.query_embed, std=0.02)
 
         # Cross-attention blocks (Mask2Former-ish: norm -> cross-attn -> add, norm -> FFN -> add)
@@ -320,6 +321,7 @@ class Predictor2D(nn.Module):
 
         # learnable mask token for masked Fi1 tiles (used to build K/V when Fi1 is masked)
         self.kv_mask_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
+        # Seed initialization for reproducibility (uses global seed set by utils.set_seed())
         nn.init.trunc_normal_(self.kv_mask_token, std=0.02)
 
     @staticmethod
@@ -796,7 +798,7 @@ class UPerNetHead(nn.Module):
         self._init_weights()
 
     def _init_weights(self):
-        """Initialize weights following UPerNet paper"""
+        """Initialize weights following UPerNet paper (uses global seed set by utils.set_seed())"""
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')

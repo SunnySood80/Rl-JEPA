@@ -22,6 +22,7 @@ os.environ['NCCL_IB_DISABLE'] = '1'              # Disable InfiniBand
 os.environ['NCCL_SOCKET_NTHREADS'] = '4'         # Reduce overhead
 os.environ['NCCL_NSOCKS_PERTHREAD'] = '4'        # Reduce overhead
 
+import argparse
 import torch
 import torch.nn.functional as F
 from torch.optim import AdamW
@@ -29,7 +30,6 @@ from torch.optim.lr_scheduler import LambdaLR
 from torch.amp import GradScaler, autocast
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
-import os
 import matplotlib.pyplot as plt
 import numpy as np
 import gc
@@ -37,6 +37,31 @@ import math
 import time   # for epoch timing
 import atexit
 import csv
+
+# Parse arguments FIRST
+parser = argparse.ArgumentParser(description='Train MaskJEPA model')
+parser.add_argument('--seed', type=int, required=True, help='Random seed for reproducibility')
+parser.add_argument('--use_rl', action='store_true', default=True, help='Use RL masking (default: True)')
+parser.add_argument('--no_rl', dest='use_rl', action='store_false', help='Disable RL masking')
+parser.add_argument('--quick_test', action='store_true', default=True, help='Use quick test mode (default: True)')
+parser.add_argument('--no_quick_test', dest='quick_test', action='store_false', help='Disable quick test mode')
+args = parser.parse_args()
+
+# SET SEED FIRST - before importing models or creating any stochastic operations
+from utils import set_seed
+set_seed(args.seed)
+
+# Worker init function to seed each DataLoader worker process
+def worker_init_fn(worker_id):
+    """Seed each DataLoader worker process for reproducible augmentation."""
+    import random
+    import numpy as np
+    import torch
+    from utils import get_seed
+    seed = get_seed() + worker_id  # Different seed per worker, but deterministic
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
 
 from MaskJEPA import MaskJEPA2D
 from utils import visualize_jepa_patch_quality, lr_lambda
@@ -47,12 +72,10 @@ from torch.utils.data import Subset
 from torch.utils.data.distributed import DistributedSampler
 from rl_agent import MaskingAgentTrainer, calculate_semantic_coherence, calculate_jepa_rewards
 
-
 use_bf16 = torch.cuda.is_bf16_supported()
 
-
-USE_RL_MASKING = True
-QUICK_TEST = True
+USE_RL_MASKING = args.use_rl
+QUICK_TEST = args.quick_test
 
 
 # DDP Setup
@@ -90,33 +113,35 @@ local_rank = int(os.environ.get("LOCAL_RANK", 0))
 is_main_process = rank == 0
 
 atexit.register(cleanup_ddp)
-1
+
 jepa_dataset = JEPADataset()
 
 if QUICK_TEST:
-    jepa_dataset = Subset(jepa_dataset, range(min(1000, len(jepa_dataset))))
+    full_size = len(jepa_dataset)
+    quarter_size = full_size // 4
+    jepa_dataset = Subset(jepa_dataset, range(quarter_size))
     if is_main_process:
-        print(f"QUICK TEST MODE: Limited dataset to {len(jepa_dataset)} samples")
+        print(f"QUICK TEST MODE: Using quarter dataset ({len(jepa_dataset):,} / {full_size:,} samples)")
 if world_size > 1:
     train_sampler = DistributedSampler(jepa_dataset, num_replicas=world_size, rank=rank, shuffle=True)
     pretrain_loader = DataLoader(
         jepa_dataset,
         batch_size=batch_size_pretrain,
         sampler=train_sampler,
-        num_workers=1,  # Reduced from 6 to avoid worker overload
+        num_workers=12,
+        worker_init_fn=worker_init_fn,
         pin_memory=True,
-        collate_fn=jepa_collate,
-        persistent_workers=True  # Keep workers alive between epochs
+        collate_fn=jepa_collate
     )
 else:
     pretrain_loader = DataLoader(
         jepa_dataset,
         batch_size=batch_size_pretrain,
         shuffle=True,
-        num_workers=2,  # Reduced from 4
+        num_workers=4,
         pin_memory=True,
         collate_fn=jepa_collate,
-        persistent_workers=True
+        worker_init_fn=worker_init_fn
     )
 
 if is_main_process:
@@ -186,10 +211,10 @@ optimizer = AdamW(model.parameters(), lr=base_lr, weight_decay=weight_decay)
 scheduler = LambdaLR(optimizer, lr_lambda=lambda epoch: lr_lambda(epoch, num_epochs, warmup_epochs))
 
 if USE_RL_MASKING:
-    save_dir = "./jepa_rl_training_output"
+    save_dir = "./jepa_rl_training_output_1337_quick"   
     model_filename = "mask_jepa_rl_pretrained_weights.pt"
 else:
-    save_dir = "./jepa_training_output"
+    save_dir = "./jepa_training_output_1337_quick"
     model_filename = "mask_jepa_pretrained_weights.pt"
 
 os.makedirs(save_dir, exist_ok=True)
@@ -233,7 +258,7 @@ if USE_RL_MASKING:
     fi1_shape = (1, 96, 64, 64)
     rl_trainer = MaskingAgentTrainer(fi1_shape, mask_ratio=0.5, patch_size=8, device=device)
     if is_main_process:
-        print(f"RL masking enabled - trainer initialized on CPU with fi1_shape: {fi1_shape}")
+        print(f"RL masking enabled - trainer initialized on {device} with fi1_shape: {fi1_shape}")
 else:
     if is_main_process:
         print("Using random masking (RL disabled)")
@@ -265,7 +290,6 @@ for epoch in range(num_epochs):
         with autocast(device_type='cuda', enabled=True, dtype=torch.bfloat16 if use_bf16 else torch.float16):
             
             if USE_RL_MASKING and rl_trainer:
-
                 rl_start = time.time()
                 
                 actual_batch_size = images.shape[0]
@@ -281,7 +305,8 @@ for epoch in range(num_epochs):
                     all_rl_masks.extend(masks)
                     all_episodes.extend(eps)
                 
-                batched_masks = torch.stack(all_rl_masks, dim=0).to(device)
+                # Masks are already on GPU, just stack them (no transfer needed)
+                batched_masks = torch.stack(all_rl_masks, dim=0)
                 
                 rl_time = time.time() - rl_start
                 if batch_idx % 10 == 0 and is_main_process:
@@ -326,9 +351,13 @@ for epoch in range(num_epochs):
         if USE_RL_MASKING and rl_trainer is not None:
             pixel_errors_batch = []
             
-            for b in range(outputs['predicted_features'].shape[0]):
-                pred_b = outputs['predicted_features'][b].detach().cpu().float().numpy()
-                tgt_b = outputs['target_masked'][b].detach().cpu().float().numpy()
+            # CRITICAL FIX: Transfer entire tensors to CPU once, not per batch item
+            pred_all = outputs['predicted_features'].detach().cpu().float().numpy()
+            tgt_all = outputs['target_masked'].detach().cpu().float().numpy()
+            
+            for b in range(pred_all.shape[0]):
+                pred_b = pred_all[b]
+                tgt_b = tgt_all[b]
                 
                 if pred_b.size == 0:
                     patch_errors = np.zeros((0,), dtype=np.float32)
@@ -338,22 +367,24 @@ for epoch in range(num_epochs):
                 
                 pixel_errors_batch.append(patch_errors)
             
+            # CRITICAL OPTIMIZATION: Transfer entire batch to CPU ONCE, not per episode
+            features_batch = outputs['fi1_features'].detach().cpu().float()  # [B, D, H8, W8]
+            mask_indices_batch = outputs['mask_indices'].detach().cpu()  # [B, M]
+            
             jepa_outputs_for_rl = {
                 'pixel_errors': pixel_errors_batch,
-                'features': outputs['fi1_features'],
-                'mask_indices': outputs['mask_indices']
+                'features': features_batch,  # Already on CPU
+                'mask_indices': mask_indices_batch  # Already on CPU
             }
             
             real_rewards = calculate_jepa_rewards(episodes, jepa_outputs_for_rl)
             
-        # Update RL agent every N batches instead of every single batch
-        UPDATE_FREQUENCY = 15
-        if batch_idx % UPDATE_FREQUENCY == 0 and is_main_process:
-            print(f"Updating RL agent at batch {batch_idx}/{len(pretrain_loader)}")
             update_start = time.time()
             rl_trainer.update_agent(episodes, jepa_outputs_for_rl)
             update_time = time.time() - update_start
-            print(f"RL update time: {update_time:.2f}s")
+            
+            if batch_idx % 10 == 0 and is_main_process:
+                print(f"RL update time: {update_time:.2f}s")
         
         scaler.scale(total_loss).backward()
         
@@ -420,7 +451,22 @@ for epoch in range(num_epochs):
             eval_images = eval_batch["images"][:4].to(device)
             
             with autocast(device_type='cuda', enabled=True, dtype=torch.bfloat16 if use_bf16 else torch.float16):
-                eval_outputs = model(eval_images)
+                # CRITICAL FIX: Generate RL masks for evaluation if RL is enabled
+                if USE_RL_MASKING and rl_trainer:
+                    eval_masks, eval_episodes = rl_trainer.generate_masks_for_batch(batch_size=eval_images.shape[0])
+                    eval_batched_masks = torch.stack(eval_masks, dim=0)
+
+                    # PRINT 1: Original mask from env
+                    print(f"ORIGINAL MASK from env - first image sum: {eval_batched_masks[0].sum().item()}")
+                    
+                    eval_outputs = model(eval_images, external_fi1_mask=eval_batched_masks)
+                    
+                    # PRINT 2: Mask after going through model
+                    print(f"MODEL OUTPUT fi1_mask - first image sum: {eval_outputs['fi1_mask'][0].sum().item()}")
+
+                    eval_outputs = model(eval_images, external_fi1_mask=eval_batched_masks)
+                else:
+                    eval_outputs = model(eval_images)
             
             H, W = eval_images.shape[-2:]
             fi1_tile = max(H // (H // 8), 1)
@@ -481,4 +527,3 @@ if is_main_process:
     print(f"Training completed. Best model already saved: {best_ckpt_path}")
 
 cleanup_ddp()
-

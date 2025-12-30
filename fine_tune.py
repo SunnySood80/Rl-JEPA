@@ -14,13 +14,37 @@ Usage:
 """
 
 # CRITICAL: Set NCCL environment variables BEFORE importing torch
+import argparse
 import os
-os.environ['NCCL_TIMEOUT'] = '14400'             # 4 hours (was timing out at 10 min)
+os.environ['NCCL_TIMEOUT'] = '7200'              # 2 hours
 os.environ['NCCL_BLOCKING_WAIT'] = '1'           # Synchronous error handling
 os.environ['NCCL_ASYNC_ERROR_HANDLING'] = '1'    # Better error reporting
 os.environ['NCCL_IB_DISABLE'] = '1'              # Disable InfiniBand
 os.environ['NCCL_SOCKET_NTHREADS'] = '4'         # Reduce overhead
 os.environ['NCCL_NSOCKS_PERTHREAD'] = '4'        # Reduce overhead
+
+# Parse arguments FIRST
+parser = argparse.ArgumentParser(description='Fine-tune MaskJEPA on ADE20K')
+parser.add_argument('--seed', type=int, required=True, help='Random seed for reproducibility')
+parser.add_argument('--quick_test', action='store_true', default=True, help='Use quick test mode (default: True)')
+parser.add_argument('--no_quick_test', dest='quick_test', action='store_false', help='Disable quick test mode')
+args = parser.parse_args()
+
+# SET SEED FIRST - before importing models or creating any stochastic operations
+from utils import set_seed
+set_seed(args.seed)
+
+# Worker init function to seed each DataLoader worker process
+def worker_init_fn(worker_id):
+    """Seed each DataLoader worker process for reproducible augmentation."""
+    import random
+    import numpy as np
+    import torch
+    from utils import get_seed
+    seed = get_seed() + worker_id  # Different seed per worker, but deterministic
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
 
 # NOW import torch and everything else
 import gc, math, numpy as np, atexit, csv, time
@@ -30,6 +54,8 @@ from torch.optim.lr_scheduler import LambdaLR, CosineAnnealingWarmRestarts
 from torch.amp import GradScaler, autocast
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
+import matplotlib
+matplotlib.use('Agg')  # Non-interactive backend - CRITICAL for DDP to prevent hanging
 import matplotlib.pyplot as plt
 
 from MaskJEPA import MaskJEPA2D
@@ -51,9 +77,8 @@ def setup_ddp():
         world_size = int(os.environ['WORLD_SIZE'])
         local_rank = int(os.environ['LOCAL_RANK'])
         
-        # Initialize process group with explicit timeout
-        from datetime import timedelta
-        dist.init_process_group(backend='nccl', timeout=timedelta(seconds=14400))
+        # Initialize process group
+        dist.init_process_group(backend='nccl')
         
         # Set device for this rank
         torch.cuda.set_device(local_rank)
@@ -90,19 +115,24 @@ is_main_process = rank == 0
 atexit.register(cleanup_ddp)
 
 # Quick test configuration
-QUICK_TEST = True  # Set to True for quick test with limited data
+QUICK_TEST = args.quick_test
 
 # Create DDP-compatible dataloaders
 ade_train_dataset = ADE20KDataset(split="training")
 ade_val_dataset = ADE20KDataset(split="validation")
 
-# Quick test mode - limit datasets to small subsets
+# Quick test mode - use quarter of each dataset
 if QUICK_TEST:
-    ade_train_dataset = Subset(ade_train_dataset, range(min(500, len(ade_train_dataset))))
-    ade_val_dataset = Subset(ade_val_dataset, range(min(100, len(ade_val_dataset))))
+    train_full_size = len(ade_train_dataset)
+    val_full_size = len(ade_val_dataset)
+    train_quarter_size = train_full_size // 4
+    val_quarter_size = val_full_size // 4
+    ade_train_dataset = Subset(ade_train_dataset, range(train_quarter_size))
+    ade_val_dataset = Subset(ade_val_dataset, range(val_quarter_size))
     if is_main_process:
-        print(f"QUICK TEST MODE: Limited train dataset to {len(ade_train_dataset)} samples")
-        print(f"QUICK TEST MODE: Limited val dataset to {len(ade_val_dataset)} samples")
+        print(f"QUICK TEST MODE: Using quarter datasets")
+        print(f"  Train: {len(ade_train_dataset):,} / {train_full_size:,} samples")
+        print(f"  Val: {len(ade_val_dataset):,} / {val_full_size:,} samples")
 
 if world_size > 1:
     train_sampler = DistributedSampler(ade_train_dataset, num_replicas=world_size, rank=rank, shuffle=True)
@@ -111,38 +141,38 @@ if world_size > 1:
         ade_train_dataset,
         batch_size=batch_size_downstream,
         sampler=train_sampler,
-        num_workers=1,  # Reduced from 8 to avoid worker overload
+        num_workers=8,
         pin_memory=True,
         collate_fn=ade_collate,
-        persistent_workers=False  # Disabled - causes hangs in multi-GPU training
+        worker_init_fn=worker_init_fn
     )
     downstream_val_loader = DataLoader(
         ade_val_dataset,
         batch_size=batch_size_downstream,
         sampler=val_sampler,
-        num_workers=1,  # Reduced from 8 to avoid worker overload
+        num_workers=8,
         pin_memory=True,
         collate_fn=ade_collate,
-        persistent_workers=False  # Disabled - causes hangs in multi-GPU training
+        worker_init_fn=worker_init_fn
     )
 else:
     downstream_train_loader = DataLoader(
         ade_train_dataset,
         batch_size=batch_size_downstream,
         shuffle=True,
-        num_workers=2,  # Reduced from 4
+        num_workers=4,
         pin_memory=True,
         collate_fn=ade_collate,
-        persistent_workers=False  # Disabled - causes hangs
+        worker_init_fn=worker_init_fn
     )
     downstream_val_loader = DataLoader(
         ade_val_dataset,
         batch_size=batch_size_downstream,
         shuffle=False,
-        num_workers=2,  # Reduced from 4
+        num_workers=4,
         pin_memory=True,
         collate_fn=ade_collate,
-        persistent_workers=False  # Disabled - causes hangs
+        worker_init_fn=worker_init_fn
     )
 
 if is_main_process:
@@ -226,11 +256,18 @@ def visualize_segmentation(images, true_masks, logits, epoch, save_path, num_sam
     fig, axes = plt.subplots(3, num_samples, figsize=(16, 12))
     mean = torch.tensor([0.485,0.456,0.406], device=images.device).view(3,1,1)
     std  = torch.tensor([0.229,0.224,0.225], device=images.device).view(3,1,1)
-    for i in range(min(num_samples, images.size(0))):
-        img = torch.clamp(images[i]*std + mean, 0, 1).permute(1,2,0).cpu().numpy()
+    
+    # CRITICAL FIX: Transfer entire batch to CPU once, not per-item
+    num_vis = min(num_samples, images.size(0))
+    images_cpu = torch.clamp(images[:num_vis]*std + mean, 0, 1).permute(0,2,3,1).cpu().numpy()
+    true_masks_cpu = true_masks[:num_vis].cpu().numpy()
+    pred_cpu = pred[:num_vis].cpu().numpy()
+    
+    for i in range(num_vis):
+        img = images_cpu[i]
         axes[0,i].imshow(img); axes[0,i].set_title(f"Original {i+1}"); axes[0,i].axis('off')
-        gt = true_masks[i].cpu().numpy(); gt_rgb = np.zeros((*gt.shape,3))
-        pr = pred[i].cpu().numpy();      pr_rgb = np.zeros((*pr.shape,3))
+        gt = true_masks_cpu[i]; gt_rgb = np.zeros((*gt.shape,3))
+        pr = pred_cpu[i];      pr_rgb = np.zeros((*pr.shape,3))
         for cls in range(NUM_CLASSES):
             m1 = (gt==cls); m2 = (pr==cls)
             if m1.any(): gt_rgb[m1] = plt.cm.tab20(cls%20)[:3]
@@ -261,7 +298,7 @@ jepa_model = MaskJEPA2D(
     num_queries=50, num_cross_attn=5, num_self_attn=1, patch_size=8
 ).to(device)
 
-weights_path = "/u/ssood/projects/Rl-JEPA/jepa_rl_training_output_QUICK_TEST_A2C_128/mask_jepa_rl_pretrained_weights.pt"
+weights_path = "./jepa_training_output_1337_quick/mask_jepa_pretrained_weights.pt"
 if not os.path.exists(weights_path):
     if is_main_process:
         print(f"ERROR: Pretrained JEPA weights not found at {weights_path}")
@@ -337,7 +374,7 @@ scheduler = LambdaLR(
 criterion = nn.CrossEntropyLoss(ignore_index=IGNORE_INDEX)
 scaler = GradScaler('cuda')
 
-save_dir = "./jepa_finetuning_output_QUICK_TEST_A2C_128"
+save_dir = "./jepa_finetuning_output_1337_quick/"
 # Ensure directory exists on all ranks
 os.makedirs(save_dir, exist_ok=True)
 if is_main_process:
@@ -477,10 +514,6 @@ for epoch in range(num_epochs):
                 print(f"  [Early Stop] Patience exceeded. Stopping fine-tuning.")
             break
 
-    # Synchronize before visualization
-    if world_size > 1:
-        dist.barrier()
-    
     # Visualizations every 20 epochs (rank 0 only)
     if (epoch + 1) % 20 == 0 and is_main_process:
         with torch.no_grad():
@@ -493,10 +526,6 @@ for epoch in range(num_epochs):
             visualize_segmentation(vis_images, vis_masks, vis_logits, epoch+1, vis_path)
             print(f"  Saved visualization: {vis_path}")
             del vis_batch, vis_images, vis_masks, vis_logits
-    
-    # Synchronize all ranks after visualization
-    if world_size > 1:
-        dist.barrier()
 
     torch.cuda.empty_cache(); gc.collect()
 

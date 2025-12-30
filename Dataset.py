@@ -11,11 +11,8 @@ from torchvision.transforms import functional as TF
 from torchvision.transforms import InterpolationMode as IM
 from math import ceil
 
-# Reproducibility
-seed = 1337
-torch.manual_seed(seed)
-random.seed(seed)
-np.random.seed(seed)
+# Note: Seed is now set via utils.set_seed() in main training scripts
+# This ensures all stochastic operations use the same seed
 
 IMG_SIZE = 512  # Updated for SwinV2-Small optimal size
 

@@ -16,6 +16,7 @@ Usage:
 """
 
 # CRITICAL: Set NCCL environment variables BEFORE importing torch
+import argparse
 import os
 os.environ['NCCL_TIMEOUT'] = '7200'              # 2 hours
 os.environ['NCCL_BLOCKING_WAIT'] = '1'           # Synchronous error handling
@@ -23,6 +24,27 @@ os.environ['NCCL_ASYNC_ERROR_HANDLING'] = '1'    # Better error reporting
 os.environ['NCCL_IB_DISABLE'] = '1'              # Disable InfiniBand
 os.environ['NCCL_SOCKET_NTHREADS'] = '4'         # Reduce overhead
 os.environ['NCCL_NSOCKS_PERTHREAD'] = '4'        # Reduce overhead
+
+# Parse arguments FIRST
+parser = argparse.ArgumentParser(description='Supervised baseline training')
+parser.add_argument('--seed', type=int, required=True, help='Random seed for reproducibility')
+args = parser.parse_args()
+
+# SET SEED FIRST - before importing models or creating any stochastic operations
+from utils import set_seed
+set_seed(args.seed)
+
+# Worker init function to seed each DataLoader worker process
+def worker_init_fn(worker_id):
+    """Seed each DataLoader worker process for reproducible augmentation."""
+    import random
+    import numpy as np
+    import torch
+    from utils import get_seed
+    seed = get_seed() + worker_id  # Different seed per worker, but deterministic
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
 
 # NOW import torch and everything else
 import gc, math, numpy as np, atexit, csv, time
@@ -102,7 +124,8 @@ if world_size > 1:
         sampler=train_sampler,
         num_workers=12,
         pin_memory=True,
-        collate_fn=ade_collate
+        collate_fn=ade_collate,
+        worker_init_fn=worker_init_fn
     )
     val_loader = DataLoader(
         ade_val_dataset,
@@ -110,7 +133,8 @@ if world_size > 1:
         sampler=val_sampler,
         num_workers=12,
         pin_memory=True,
-        collate_fn=ade_collate
+        collate_fn=ade_collate,
+        worker_init_fn=worker_init_fn
     )
 else:
     train_loader = DataLoader(
@@ -119,7 +143,8 @@ else:
         shuffle=True,
         num_workers=4,
         pin_memory=True,
-        collate_fn=ade_collate
+        collate_fn=ade_collate,
+        worker_init_fn=worker_init_fn
     )
     val_loader = DataLoader(
         ade_val_dataset,
@@ -127,7 +152,8 @@ else:
         shuffle=False,
         num_workers=4,
         pin_memory=True,
-        collate_fn=ade_collate
+        collate_fn=ade_collate,
+        worker_init_fn=worker_init_fn
     )
 
 if is_main_process:

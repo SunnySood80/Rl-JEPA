@@ -96,7 +96,11 @@ class MaskJEPA2D(nn.Module):
         H4, W4 = H // s_last, W // s_last
         sigma = 0.4
     
-        eps_lr = torch.randn(B, C, H4, W4, device=device, dtype=x.dtype) * sigma
+        # Seed noise generation for reproducibility
+        from utils import get_seed
+        generator = torch.Generator(device=device)
+        generator.manual_seed(get_seed())
+        eps_lr = torch.randn(B, C, H4, W4, device=device, dtype=x.dtype, generator=generator) * sigma
         eps_full = eps_lr.repeat_interleave(s_last, dim=2).repeat_interleave(s_last, dim=3)
         x_noisy = x + eps_full
     

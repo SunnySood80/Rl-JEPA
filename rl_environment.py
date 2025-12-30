@@ -36,8 +36,8 @@ class MaskingEnv(gym.Env):
         self.masked_patches = None
         
         self.step_count = 0
-        self.max_steps = self.num_masked * 3
-
+        self.max_steps = self.num_masked
+    
     def reset(self):
         self.current_mask = torch.zeros(self.H8 * self.W8, dtype=torch.bool, device=self.device)
         self.state = np.zeros((self.n_patches_h, self.n_patches_w), dtype=np.float32)
@@ -47,13 +47,8 @@ class MaskingEnv(gym.Env):
         return self.state
 
     def step(self, action):
-        self.step_count += 1
-        
-        if action in self.masked_patches:
-            reward = -5
-            done = (self.step_count >= self.max_steps)
-            return self.state, reward, done, {}
 
+        self.step_count += 1
     
         ph = action // self.n_patches_w
         pw = action % self.n_patches_w
@@ -73,8 +68,12 @@ class MaskingEnv(gym.Env):
         done = (self.masked_count >= self.num_masked) or (self.step_count >= self.max_steps)
 
         if done and self.masked_count >= self.num_masked:
+
+            actual_pixels = self.current_mask.sum().item()
+            expected = self.masked_count * self.patch_size * self.patch_size
+                
             steps_saved = self.max_steps - self.step_count
-            efficiency_bonus = (steps_saved / self.max_steps) * 20.0
+            efficiency_bonus = (steps_saved / self.max_steps) * 10.0
             reward = efficiency_bonus
         else:
             reward = 0.0
@@ -92,22 +91,3 @@ class MaskingEnv(gym.Env):
             if action not in self.masked_patches:
                 available.append(action)
         return available
-
-    # def actions_to_mask(self, actions):
-    #     """
-    #     Convert action array to mask grid
-        
-    #     Args:
-    #         actions: numpy array [num_patches] with 0s and 1s
-        
-    #     Returns:
-    #         mask: [grid_h, grid_w] boolean mask
-    #     """
-        
-    #     # Reshape flat actions to 2D grid
-    #     mask = actions.reshape(self.n_patches_h, self.n_patches_w)
-        
-    #     # Convert to boolean if needed
-    #     mask = mask.astype(bool)
-        
-    #     return mask

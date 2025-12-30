@@ -46,17 +46,21 @@ class PolicyNetwork(nn.Module):
             
         return action_probs, value
     
-    def get_action(self, state, deterministic=False):
+    def get_action(self, state, deterministic=False, generator=None):
         with torch.no_grad():
             action_probs, value = self.forward(state)
             
             if deterministic:
                 action = torch.argmax(action_probs)
             else:
-                dist = Categorical(action_probs)
-                action = dist.sample()
+                # Use generator for reproducible sampling via multinomial
+                if generator is not None:
+                    action = torch.multinomial(action_probs, num_samples=1, generator=generator).item()
+                else:
+                    dist = Categorical(action_probs)
+                    action = dist.sample().item()
                 
-        return action.item(), action_probs, value.item()
+        return action, action_probs, value.item()
 
 
 class A2C:
@@ -84,9 +88,15 @@ class A2C:
         self.policy = PolicyNetwork(obs_shape, action_dim).to(device)
         self.optimizer = torch.optim.Adam(self.policy.parameters(), lr=lr)
         
+        # Create generator for reproducible operations (seeded by utils.set_seed())
+        from utils import get_seed
+        self.generator = torch.Generator(device=device)
+        self.generator.manual_seed(get_seed())
+        
     def select_action(self, state: np.ndarray, deterministic: bool = False):
         state_tensor = torch.FloatTensor(state).to(self.device)
-        action, action_probs, value = self.policy.get_action(state_tensor, deterministic)
+        # Use generator for reproducible action sampling
+        action, action_probs, value = self.policy.get_action(state_tensor, deterministic, generator=self.generator)
         
         dist = Categorical(action_probs)
         log_prob = dist.log_prob(torch.tensor(action, device=self.device)).item()
